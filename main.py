@@ -1,5 +1,3 @@
-# main.py: Final Submission - Optimized for Speed, Accuracy, and Reliability
-
 import os
 import requests
 import hashlib
@@ -39,7 +37,7 @@ app = FastAPI(
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 pinecone_index = pc.Index(host=os.getenv("PINECONE_INDEX_HOST"))
 
-embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
+embed_model = HuggingFaceEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2", cache_folder="./model_cache")
 llm = Groq(model="llama3-8b-8192", api_key=os.getenv("GROQ_API_KEY"))
 
 QA_PROMPT_TEMPLATE = """
@@ -50,11 +48,11 @@ You are a highly precise Q&A bot. Your only job is to answer the user's question
 ---------------------
 **Question:** {query_str}
 **Instructions:**
-1. Find the single most important and specific fact in the context to answer the question.
+1. First, determine if the question can be answered with a 'Yes' or 'No'.
 2. Formulate a single, direct sentence that answers the question, including critical numbers or conditions.
-3. **If the question is a yes/no question, begin your answer with 'Yes,' or 'No,'** followed by the explanation.
-4. Do not start your answer with introductory phrases like "According to the policy...". Get straight to the point.
-5.  Match the style of this example: "Yes, the policy covers maternity expenses, including childbirth..."
+3. If the question is a yes/no question, begin your answer with 'Yes,' or 'No,' followed by the explanation.
+4. Do not start your answer with other introductory phrases like "According to the policy...". Get straight to the point.
+5. Match the style of this example: "Yes, the policy covers maternity expenses, including childbirth..."
 **Answer (single sentence):**
 """
 # =====================================================================================
@@ -67,6 +65,17 @@ def get_api_key(api_key_header: str = Security(api_key_header)):
         if token == API_KEY:
             return token
     raise HTTPException(status_code=403, detail="Could not validate credentials")
+
+
+def safe_delete(path: Path):
+    """Safely deletes a file or directory without crashing the server."""
+    try:
+        if path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+    except Exception as e:
+        print(f"Warning: Failed to delete {path}: {e}")
 
 class HackRxRequest(BaseModel):
     documents: str
@@ -102,10 +111,9 @@ async def run_submission_endpoint(
                     documents, storage_context=storage_context, embed_model=embed_model,
                 )
                 print("Index upload complete. Waiting briefly for consistency...")
-                time.sleep(5) # A short, reasonable delay for Pinecone to be ready.
+                time.sleep(5)
             finally:
-                if temp_doc_path.parent.exists():
-                    shutil.rmtree(temp_doc_path.parent)
+                safe_delete(temp_doc_path)
 
         index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embed_model)
         

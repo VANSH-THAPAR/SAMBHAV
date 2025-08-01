@@ -1,15 +1,3 @@
-# fastapi
-# uvicorn[standard]
-# python-dotenv
-# requests
-# llama-index
-# llama-index-embeddings-huggingface
-# llama-index-llms-groq
-# pypdf
-# python-docx
-# llama-index-vector-stores-pinecone
-# pinecone-client
-
 fastapi
 uvicorn[standard]
 python-dotenv
@@ -22,3 +10,6 @@ python-docx
 llama-index-vector-stores-pinecone
 pinecone-client
 llama-index-postprocessor-cohere-rerank
+gunicorn
+sentence-transformers
+torch
