@@ -122,7 +122,3 @@ Authorization: Bearer 69209b0175d58128f147b0104e0b91a4f6c9ad08d9852206d28d653c3b
 ## 🚀 Team
 
 Built with ❤️ by Team Sambhav - HackRx 6.0
-
-> For queries or live demo issues, contact: [vanshthapar.professional@gmail.com](mailto:vanshthapar.professional@gmail.com)
-
----
