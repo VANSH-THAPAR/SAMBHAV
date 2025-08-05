@@ -7,18 +7,23 @@ from typing import List
 import time
 import asyncio
 import httpx  # For async requests
-import aiofiles # For async file operations
+import aiofiles  # For async file operations
 
 from fastapi import FastAPI, HTTPException, Security
 from pydantic import BaseModel
 from fastapi.security.api_key import APIKeyHeader
 
 from pinecone import Pinecone
-from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, PromptTemplate, StorageContext
+from llama_index.postprocessors.cohere_rerank import CohereRerank
+from llama_index.core import (
+    VectorStoreIndex,
+    SimpleDirectoryReader,
+    PromptTemplate,
+    StorageContext,
+)
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.groq import Groq
 from llama_index.vector_stores.pinecone import PineconeVectorStore
-from llama_index.postprocessor.cohere_rerank import CohereRank
 
 # =====================================================================================
 # 1. SETUP AND CONFIGURATION
@@ -26,7 +31,6 @@ from llama_index.postprocessor.cohere_rerank import CohereRank
 
 load_dotenv()
 
-# IMPORTANT: Load your API key from environment variables for security
 API_KEY = os.getenv("HACKRX_API_KEY", "69209b0175d58128f147b0104e0b91a4f6c9ad08d9852206d28d653c3b0b48cd")
 API_KEY_NAME = "Authorization"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
@@ -37,10 +41,14 @@ app = FastAPI(
     version="WINNER_OPTIMIZED",
 )
 
-# --- LlamaIndex and Pinecone Setup (loaded once at startup) ---
+# --- LlamaIndex and Pinecone Setup ---
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 pinecone_index = pc.Index(host=os.getenv("PINECONE_INDEX_HOST"))
-embed_model = HuggingFaceEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2", cache_folder="./model_cache")
+
+embed_model = HuggingFaceEmbedding(
+    model_name="sentence-transformers/all-MiniLM-L6-v2", cache_folder="./model_cache"
+)
+
 llm = Groq(model="llama3-8b-8192", api_key=os.getenv("GROQ_API_KEY"))
 
 QA_PROMPT_TEMPLATE = """
@@ -60,10 +68,10 @@ You are a highly precise Q&A bot. Your only job is to answer the user's question
 """
 
 # =====================================================================================
-# 2. API LOGIC
+# 2. API SECURITY + MODELS
 # =====================================================================================
+
 def get_api_key(api_key_header: str = Security(api_key_header)):
-    """Validates the bearer token."""
     if api_key_header and api_key_header.startswith("Bearer "):
         token = api_key_header.split(" ")[1]
         if token == API_KEY:
@@ -77,9 +85,11 @@ class HackRxRequest(BaseModel):
 class HackRxResponse(BaseModel):
     answers: List[str]
 
-# This is a synchronous function that we will run in a separate thread
+# =====================================================================================
+# 3. INDEXING FUNCTION
+# =====================================================================================
+
 def sync_index_from_file(file_path: Path, vector_store: PineconeVectorStore):
-    """Loads data from a file and indexes it into Pinecone synchronously."""
     print(f"Starting synchronous indexing for file: {file_path}")
     documents = SimpleDirectoryReader(input_files=[file_path], errors='ignore').load_data()
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
@@ -88,6 +98,9 @@ def sync_index_from_file(file_path: Path, vector_store: PineconeVectorStore):
     )
     print("Synchronous indexing complete.")
 
+# =====================================================================================
+# 4. API ENDPOINT
+# =====================================================================================
 
 @app.post("/hackrx/run", response_model=HackRxResponse, tags=["Submission Endpoint"])
 async def run_submission_endpoint(
@@ -104,23 +117,19 @@ async def run_submission_endpoint(
             print(f"Index not found. Starting ingestion for namespace: {url_hash}")
             temp_doc_path = Path(f"./temp_docs/doc_{url_hash}.pdf")
             temp_doc_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             try:
-                # 1. Asynchronously download the file
                 async with httpx.AsyncClient() as client:
                     response = await client.get(request.documents, follow_redirects=True, timeout=20.0)
                     response.raise_for_status()
-                
-                # 2. Asynchronously write the file to disk
+
                 async with aiofiles.open(temp_doc_path, "wb") as f:
                     await f.write(response.content)
 
-                # 3. Run the slow, CPU-bound indexing in a separate thread
                 await asyncio.to_thread(sync_index_from_file, temp_doc_path, vector_store)
-                
-                # 4. Intelligent waiting: Poll Pinecone until the index is ready
+
                 print("Polling Pinecone for index readiness...")
-                for _ in range(15): # Poll for a max of 15 seconds
+                for _ in range(15):
                     stats = pinecone_index.describe_index_stats()
                     count = stats.namespaces.get(url_hash, {}).get('vector_count', 0)
                     if count > 0:
@@ -134,33 +143,36 @@ async def run_submission_endpoint(
                 if temp_doc_path.parent.exists():
                     shutil.rmtree(temp_doc_path.parent)
 
-        # --- Querying Logic (runs for both new and existing documents) ---
         print(f"Proceeding to query namespace: {url_hash}")
         index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embed_model)
-        
+
         cohere_rerank = CohereRerank(api_key=os.getenv("COHERE_API_KEY"), top_n=3)
         qa_prompt_object = PromptTemplate(QA_PROMPT_TEMPLATE)
 
         query_engine = index.as_query_engine(
             llm=llm,
-            similarity_top_k=15, 
-            node_postprocessors=[cohere_rerank], 
+            similarity_top_k=15,
+            node_postprocessors=[cohere_rerank],
             text_qa_template=qa_prompt_object,
         )
-        
+
         answers = []
         for question in request.questions:
             print(f"Processing question: '{question}'")
             response = await query_engine.aquery(question)
             answers.append(str(response).strip())
-        
+
         print("SUCCESS: All questions processed.")
         return HackRxResponse(answers=answers)
-    
+
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+# =====================================================================================
+# 5. ROOT
+# =====================================================================================
 
 @app.get("/", include_in_schema=False)
 async def root():
